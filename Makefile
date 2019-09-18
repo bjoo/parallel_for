@@ -1,3 +1,5 @@
+#TEST_OPTIONS=-DNO_LAMBDA -DDO_LOCALCOPY
+TEST_OPTIONS=
 KOKKOS_DEVICES=SyCL
 KOKKOS_CUDA_OPTIONS=enable_lambda
 KOKKOS_ARCH = "None"
@@ -9,7 +11,7 @@ ifndef KOKKOS_PATH
   KOKKOS_PATH = $(MAKEFILE_PATH)../..
 endif
 
-KOKKOS_OPTIONS=disable_deprecated_code
+KOKKOS_OPTIONS=disable_deprecated_code,disable_profiling
 
 SRC = $(wildcard $(MAKEFILE_PATH)*.cpp)
 HEADERS = $(wildcard $(MAKEFILE_PATH)*.hpp)
@@ -21,8 +23,8 @@ default: build
 
 EXE = bytes_and_flops.host
 CXX=clang++
-CXXFLAGS ?= -O3 -g
-override CXXFLAGS += -I$(MAKEFILE_PATH)
+CXXFLAGS ?= -O0 -g
+override CXXFLAGS += -I$(MAKEFILE_PATH) $(TEST_OPTIONS)
 
 DEPFLAGS = -M
 LINK = ${CXX}

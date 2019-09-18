@@ -1,27 +1,33 @@
 #include <Kokkos_Core.hpp>
+
+
 struct functor {
-  functor( void * ptr_d_ ) : ptr_d((unsigned long)ptr_d_), mult(2.0) {}
-
+ 
   double mult;   
-  unsigned long ptr_d=0xdeadbeef;
+  double* ptr_d;
 
-
-  inline
   void operator()(const int i,  cl::sycl::stream out) const {
-    double *dptr = (double *)ptr_d;
 
-    if ( dptr == 0x0 ) {
+    if ( ptr_d == 0x0 ) {
       if ( i  == 2 ) { 
 	out << "Id = " << i << " BARF!!!" << cl::sycl::endl;
       }
     }
     else {
-      dptr[i] = mult*(double)i+1.5;
+      ptr_d[i] = mult*(double)i+1.5;
     }
   }
+
+  friend std::ostream& operator<<(std::ostream& os, functor const& that)
+  { return os << "my addr=" << &that << " mult=" << that.mult << " ptr_d=" << that.ptr_d; }
+
+  friend cl::sycl::stream operator<<(cl::sycl::stream os, functor const& that)
+  { return os << "my addr=" << &that << " mult=" << that.mult << " ptr_d=" << that.ptr_d; }
+
 };
 
 void copyAndPrint(void *ptr_d, cl::sycl::queue* q, int N);
+void zero(double *ptr_d, cl::sycl::queue *q, int N);
 
 #include "KokkosProxies.hpp"
 
@@ -35,23 +41,44 @@ int main(int argc, char *argv[])
 
 	const int N = 15;
 
-	void* ptr_d=cl::sycl::malloc_device(N*sizeof(double),device,context);
+	double* ptr_d=(double *)cl::sycl::malloc_device(N*sizeof(double),device,context);
 	std::cout << " q ptr is : " << (unsigned long)q << std::endl;
 	std::cout << " ptr_d is : " << (unsigned long)ptr_d << std::endl;
 	std::cout << " Calling q.submit() " << std::endl;
 
-	functor f(ptr_d);
-	f.mult=4.0;
-	Foo::Bar::my_parallel_for_2(N,f);
+	functor* f=(functor *)cl::sycl::malloc_shared(sizeof(functor),device,context);
+	f->mult=4.0;
+	f->ptr_d = ptr_d;
+	Foo::Bar::my_parallel_for_2(N,*f);
 	copyAndPrint(ptr_d,q,N);
 
 	std::cout << "Kokkos::parallel_for " << std::endl;
-	f.mult = 6.0;
-	Kokkos::parallel_for(N,f);
+	f->mult = 6.0;
+	f->ptr_d = ptr_d;
+
+	Kokkos::parallel_for(N,*f);
 	Kokkos::fence();
 	copyAndPrint(ptr_d,q,N);
 
+#ifndef NO_LAMBDA
+	std::cout << "Kokkos::oarallel for with lambda " << std::endl;
+	Kokkos::parallel_for(N,[=](const int i,  cl::sycl::stream out) {
+	   double mult=9;
+
+           if ( ptr_d == 0x0 ) {
+             if ( i  == 2 ) {
+               out << "Id = " << i << " BARF!!!" << cl::sycl::endl;
+             }
+           }
+           else {
+             ptr_d[i] = mult*(double)i+1.5;
+           }
+        });
+	Kokkos::fence();
+	copyAndPrint(ptr_d,q,N);
+#endif
 	cl::sycl::free((void *)ptr_d,context);
+	cl::sycl::free((void *)f,context);
 	Kokkos::finalize();
 }
 
@@ -75,3 +102,13 @@ void copyAndPrint(void *ptr_d, cl::sycl::queue* q, int N) {
 
 }
 
+void zero(double *ptr_d, cl::sycl::queue *q, int N) 
+{
+        q->submit([&](cl::sycl::handler& cgh) {
+             cgh.single_task<class copy>([=]{
+               for(int i=0; i<N; i++) {
+                ptr_d[i]=0;
+               }
+             });
+         });
+}
