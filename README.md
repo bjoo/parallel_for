@@ -30,54 +30,58 @@ In this directory,
 
 In `main.cpp` we define a functor as follows:
 
-> struct functor {
->
->  double mult;
->  double* ptr_d;   // This will be a device pointer
->
->  void operator()(const int i,  cl::sycl::stream out) const {
->
->    if ( ptr_d == 0x0 ) { 
->      if ( i  == 2 ) {   // So only 1 thread prints
->        out << "Id = " << i << " BARF!!!" << cl::sycl::endl;
->      }
->    }
->    else {
->      ptr_d[i] = mult*(double)i+1.5; // The actual work
->    }
->  }
->
->  // These are just so the functor could print itself out both in and outside
->  // SYCL kernels
->
->  friend std::ostream& operator<<(std::ostream& os, functor const& that)
->  { return os << "my addr=" << &that << " mult=" << that.mult << " ptr_d=" << that.ptr_d; }
->
->  friend cl::sycl::stream operator<<(cl::sycl::stream os, functor const& that)
->  { return os << "my addr=" << &that << " mult=" << that.mult << " ptr_d=" << that.ptr_d; }
->
->};
+```
+struct functor {
+
+  double mult;
+  double* ptr_d;   // This will be a device pointer
+
+  void operator()(const int i,  cl::sycl::stream out) const {
+
+    if ( ptr_d == 0x0 ) { 
+      if ( i  == 2 ) {   // So only 1 thread prints
+        out << "Id = " << i << " BARF!!!" << cl::sycl::endl;
+      }
+    }
+    else {
+      ptr_d[i] = mult*(double)i+1.5; // The actual work
+    }
+  }
+
+  // These are just so the functor could print itself out both in and outside
+  // SYCL kernels
+
+  friend std::ostream& operator<<(std::ostream& os, functor const& that)
+  { return os << "my addr=" << &that << " mult=" << that.mult << " ptr_d=" << that.ptr_d; }
+
+  friend cl::sycl::stream operator<<(cl::sycl::stream os, functor const& that)
+  { return os << "my addr=" << &that << " mult=" << that.mult << " ptr_d=" << that.ptr_d; }
+
+};
+```
 
 We then allocate a device pointer using USM for the `ptr_d` member and dispatch this functor
 both using the Kokkos back end and Kokkos proxies as follows:
 
->  double* ptr_d=(double *)cl::sycl::malloc_device(N*sizeof(double),device,context);
->  std::cout << " q ptr is : " << (unsigned long)q << std::endl;
->  std::cout << " ptr_d is : " << (unsigned long)ptr_d << std::endl;
->  std::cout << " Calling q.submit() " << std::endl;
->  functor* f=(functor *)cl::sycl::malloc_shared(sizeof(functor),device,context);
->  f->mult=4.0;
->  f->ptr_d = ptr_d;
->  Foo::Bar::my_parallel_for_2(N,*f);
->  copyAndPrint(ptr_d,q,N);
->
->  std::cout << "Kokkos::parallel_for " << std::endl;
->  f->mult = 6.0;
->  f->ptr_d = ptr_d;
->
->  Kokkos::parallel_for(N,*f);
->  Kokkos::fence();
->  copyAndPrint(ptr_d,q,N);
+```
+  double* ptr_d=(double *)cl::sycl::malloc_device(N*sizeof(double),device,context);
+  std::cout << " q ptr is : " << (unsigned long)q << std::endl;
+  std::cout << " ptr_d is : " << (unsigned long)ptr_d << std::endl;
+  std::cout << " Calling q.submit() " << std::endl;
+  functor* f=(functor *)cl::sycl::malloc_shared(sizeof(functor),device,context);
+  f->mult=4.0;
+  f->ptr_d = ptr_d;
+  Foo::Bar::my_parallel_for_2(N,*f);
+  copyAndPrint(ptr_d,q,N);
+
+  std::cout << "Kokkos::parallel_for " << std::endl;
+  f->mult = 6.0;
+  f->ptr_d = ptr_d;
+
+  Kokkos::parallel_for(N,*f);
+  Kokkos::fence();
+  copyAndPrint(ptr_d,q,N);
+```
 
 The `Foo::Bar::my_parallel_for_2` is a proxy for Kokkos parallel for. The 'copyAndPrint` function
 copies the data from the device pointer into a buffer, which we can then print on the host with 
@@ -359,6 +363,7 @@ Calling Localfunctor
 2 9.500000    // BJ: Should be 13.5
 3 19.500000
 4 25.500000
+
 5 31.500000
 6 37.500000
 7 43.500000
