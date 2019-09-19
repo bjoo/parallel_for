@@ -1,12 +1,12 @@
 #TEST_OPTIONS=-DNO_LAMBDA -DDO_LOCALCOPY
-TEST_OPTIONS=
+TEST_OPTIONS=-DDO_LOCALCOPY -DNO_LAMBDA
 KOKKOS_DEVICES=SyCL
 KOKKOS_CUDA_OPTIONS=enable_lambda
 KOKKOS_ARCH = "None"
 
 
 MAKEFILE_PATH := $(subst Makefile,,$(abspath $(lastword $(MAKEFILE_LIST))))
-KOKKOS_PATH=/home/bjoo/KokkosSyCL/kokkos
+KOKKOS_PATH=./external/kokkos
 ifndef KOKKOS_PATH
   KOKKOS_PATH = $(MAKEFILE_PATH)../..
 endif

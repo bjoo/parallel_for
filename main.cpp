@@ -26,7 +26,7 @@ struct functor {
 
 };
 
-void copyAndPrint(void *ptr_d, cl::sycl::queue* q, int N);
+void copyAndPrint(void *ptr_d, cl::sycl::queue* q, int N,double mult);
 void zero(double *ptr_d, cl::sycl::queue *q, int N);
 
 #include "KokkosProxies.hpp"
@@ -42,23 +42,24 @@ int main(int argc, char *argv[])
 	const int N = 15;
 
 	double* ptr_d=(double *)cl::sycl::malloc_device(N*sizeof(double),device,context);
+
 	std::cout << " q ptr is : " << (unsigned long)q << std::endl;
 	std::cout << " ptr_d is : " << (unsigned long)ptr_d << std::endl;
 	std::cout << " Calling q.submit() " << std::endl;
 
-	functor* f=(functor *)cl::sycl::malloc_shared(sizeof(functor),device,context);
-	f->mult=4.0;
-	f->ptr_d = ptr_d;
-	Foo::Bar::my_parallel_for_2(N,*f);
-	copyAndPrint(ptr_d,q,N);
+
+	functor f;
+	f.mult=4.0;
+	f.ptr_d = ptr_d;
+	Foo::Bar::my_parallel_for_2(N,f);
+        copyAndPrint(ptr_d,q,N,f.mult);
 
 	std::cout << "Kokkos::parallel_for " << std::endl;
-	f->mult = 6.0;
-	f->ptr_d = ptr_d;
-
-	Kokkos::parallel_for(N,*f);
+	f.mult = 6.0;
+	f.ptr_d = ptr_d;
+	Kokkos::parallel_for(N,f);
 	Kokkos::fence();
-	copyAndPrint(ptr_d,q,N);
+	copyAndPrint(ptr_d,q,N,f.mult);
 
 #ifndef NO_LAMBDA
 	std::cout << "Kokkos::oarallel for with lambda " << std::endl;
@@ -75,14 +76,13 @@ int main(int argc, char *argv[])
            }
         });
 	Kokkos::fence();
-	copyAndPrint(ptr_d,q,N);
+	copyAndPrint(ptr_d,q,N,9.0);
 #endif
 	cl::sycl::free((void *)ptr_d,context);
-	cl::sycl::free((void *)f,context);
 	Kokkos::finalize();
 }
 
-void copyAndPrint(void *ptr_d, cl::sycl::queue* q, int N) {
+void copyAndPrint(void *ptr_d, cl::sycl::queue* q, int N, double mult) {
 
 
 	cl::sycl::buffer<double,1> hbuf(N);
@@ -95,11 +95,20 @@ void copyAndPrint(void *ptr_d, cl::sycl::queue* q, int N) {
 	     });
 	 });
 
+	bool pass = true;
 	auto haccess = hbuf.get_access<cl::sycl::access::mode::read>();
 	for(int i=0; i < N; ++i) {
 	  printf("%d %lf\n", i, haccess[i]);
+	  double expected = mult*i + 1.5;
+	  double diff = std::fabs(expected - haccess[i]);
+	  if ( diff > 5.0e-5 ) { 
+	     std::cout << "i = " << i << " diff = " << diff <<  " > 5.0e-14" << std::endl;
+	     pass = false;
+	  }
 	}
-
+	if (pass) {
+	   std::cout << "PASSED" << std::endl;
+	}
 }
 
 void zero(double *ptr_d, cl::sycl::queue *q, int N) 
