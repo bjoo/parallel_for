@@ -129,8 +129,8 @@ Calling Localfunctor
 PASSED
 ```
 
-which shows that some passes tha Proxy Kokkos' behaviour (see below for detailed code structure) appear to
-work and that going via Kokkos also works. However, please note the line in the output:
+which shows that Kokkos Proxy classes work fine and pass and also the actual Kokkos class also appears to
+work. However, please note the line in the output:
 
 ```
 In par for: Before Kernel call: idx = 2 argument functor : my addr=0x3c92310 mult=0 ptr_d=0x0
