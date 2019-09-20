@@ -17,10 +17,12 @@ case the functor needed to be made into something local for capture into the par
 
 I used the following version of the GitHub compiler:
 
-> clang version 9.0.0 (https://github.com/intel/llvm.git 51a6204c09f8c8868cb9675c1a7f4c1386eb3c65)
-> Target: x86_64-unknown-linux-gnu
-> Thread model: posix
-> InstalledDir: /dist/sfw/ubuntu/intel-llvm9-sycl-2019-09-17/bin
+```
+ clang version 9.0.0 (https://github.com/intel/llvm.git 51a6204c09f8c8868cb9675c1a7f4c1386eb3c65)
+ Target: x86_64-unknown-linux-gnu
+ Thread model: posix
+ InstalledDir: /dist/sfw/ubuntu/intel-llvm9-sycl-2019-09-17/bin
+```
 
 and I use the Intel HD Compute driver (NEO) version `19.36.14103`
 
