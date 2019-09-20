@@ -179,7 +179,7 @@ i = 14 diff = 28 > 5.0e-14
 MEGABARF!
 ```
 and we can now see that the pointer in the `localcopy` is corrupted for thread with `idx=2`, it has changed from 
-`ptr_d=0x24a3000` before the parallel for to `ptr_d=0x650065024a3000` after (a bunch of digits seem to have been
+`ptr_d=0x24a3000` before the parallel for to `ptr_d=0x650065024a3000`inside it (a bunch of digits seem to have been
 masked in/not masked off adding the digits `0x6500650` at the front of the original address. The other threads presumably also got
 corrupted pointers hence differences in nearly all the values of `i`. One can get a case where the printed pointer looks
 fine but the answers for some threads are still wrong. This is because we only print the pointer for thread with `idx==2`
@@ -213,7 +213,7 @@ more frequently.
 
 We suspect that struct members that are USM pointers are not captured correctly in SYCL lambdas. Discussions
 with James Brodman indicate that there is such a bug already being worked on. I am putting in this bugreport
-so that the issue can be tracked on the GitHub public compiler too.
+so that the issue can be tracked on GitHub also.
 
 
 
@@ -222,10 +222,11 @@ so that the issue can be tracked on the GitHub public compiler too.
 The clone will create a directory called `parallel_for`
 
 In this directory, 
-	* the program to exercise the bug is in `main.cpp`
-	* the Kokkos proxies are in `KokkosProxies.hpp`
-	* there is a `Makefile`
-	* the prototype Kokkos back end is in the `parallel_for/external/kokkos`
+
+* the program to exercise the bug is in `main.cpp`
+* the Kokkos proxies are in `KokkosProxies.hpp`
+* there is a `Makefile`
+* the prototype Kokkos back end is in the `parallel_for/external/kokkos`
 
 In `main.cpp` we define a functor as follows:
 
