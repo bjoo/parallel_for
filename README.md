@@ -1,24 +1,221 @@
-# Lambda Capture Bug
+# Lambda Capture / USM Pointer Copy Bug
 
 ## Introduction
 
-This bug demonstrates a lambda capture bug we found with the Public Intel SYCL compiler and USM.
+This bugreport shows a lambda capture / USM pointer copy bug we found with the Public Intel SYCL compiler and USM.
 The bug is as follows: sometimes a device pointer allocated by `malloc_device` is not 
-captured correctly. In this example this happens when the pointer is accessed in a *functor* struct
-or in a *lambda*, specifically in the prototype Kokkos SYCL Back end dispatch launcher.
+copied correctly into device code (in a parallel for).
 
-Things however seem to work better in some proxy classes, which mimic the Kokkos classes.
-Below we show how to clone and build the code, how the bug manifests and how we have been able
-to work around it occasionally.
+In this example this happens when the pointer is accessed in a *functor* struct
+or in a *lambda*, within another lambda, specifically in the prototype Kokkos SYCL Back end dispatch launcher.
+
+We have found a workaround, which was to capture the pointer not as a pointer type but 
+as an appropriate integer type (which is just copied), e.g. `uintptr_t`. However, even in this
+case the functor needed to be made into something local for capture into the parallel for by value.
+
+## Compilers and drivers
+
+I used the following version of the GitHub compiler:
+
+> clang version 9.0.0 (https://github.com/intel/llvm.git 51a6204c09f8c8868cb9675c1a7f4c1386eb3c65)
+> Target: x86_64-unknown-linux-gnu
+> Thread model: posix
+> InstalledDir: /dist/sfw/ubuntu/intel-llvm9-sycl-2019-09-17/bin
+
+and I use the Intel HD Compute driver (NEO) version `19.36.14103`
+
 
 ## Getting the example
 
 This example contains the prototype Kokkos back end as a sub-module. Correspondingly
 it should be cloned recursively:
 
-> git clone --recursive https://github.com/bjoo/parallel_for.git
+```
+ git clone --recursive https://github.com/bjoo/parallel_for.git
+```
 
-## Code structure and description
+## Manifesting the bug
+
+First we show that unless we make a local copy of the passed in functor between `q.submit` and
+the `cgh.parallel_for` the value of a pointer can get lost.  To show this edit the `Makefile`
+and set the `TEST_OPTIONS` in line 1 to
+
+```
+TEST_OPTIONS=-DNO_LAMBDA
+```
+
+edit the `main.cpp` and make the test use a pointer type by commenting in the line:
+```
+    typedef double* my_ptr_t;
+```
+and commenting out the other definition like so
+``` 
+   // typedef uintptr_t my_ptr_t;
+```
+
+then build and run with 
+```
+make clean
+make -j 
+./bytes_and_flops.host
+```
+
+Sometimes the code will pass e.g.  below:
+
+```
+Calling Initialize internal with arguments.device_id =-1
+Use GPU <=-1 branch 
+In impl_iniitialize with config.sycl_device_id = 0
+Calling inititalize with sycl_device_id = 0
+The system contains 3 devices
+Device 0 : Intel(R) Gen9 HD Graphics NEO Driver Version: 19.36.14103 Is accelerator: YES
+Device 1 : Intel(R) Core(TM) i7-6770HQ CPU @ 2.60GHz Driver Version: 18.1.0.0920 Is accelerator: NO
+Device 2 : SYCL host device Driver Version: 1.2 Is accelerator: NO
+Selecting device: 0
+Device 0 : Intel(R) Gen9 HD Graphics NEO Driver Version: 19.36.14103 Is accelerator: YES
+ q ptr is : 39482240
+ ptr_d is : 29384704
+ Calling q.submit() 
+Calling execute
+In sycl_launch_copy
+Queue pointer is: 39482240
+range=15
+driver_in.ptr_d = 29384704
+idx = 2 PF ptr_d = 29384704
+0 1.500000
+1 5.500000
+2 9.500000
+3 13.500000
+4 17.500000
+5 21.500000
+6 25.500000
+7 29.500000
+8 33.500000
+9 37.500000
+10 41.500000
+11 45.500000
+12 49.500000
+13 53.500000
+14 57.500000
+PASSED
+Kokkos::parallel_for 
+in execute: ptr_d =  0x1c06000
+In sycl_launch
+Queue pointer is: 39482240
+range=15
+driver_in.ptr_d = 29384704
+Functor: my addr=0x7ffd419bb230 mult=6 ptr_d=0x1c06000
+Before par for: ptr_d=my addr=0x7ffd419bb230 mult=6 ptr_d=0x1c06000
+Before par for: local copy = my addr=0x7ffd419bad80 mult=6 ptr_d=0x1c06000
+
+Calling Localfunctor 
+0 1.500000
+1 7.500000
+2 13.500000
+3 19.500000
+4 25.500000
+5 31.500000
+6 37.500000
+7 43.500000
+8 49.500000
+9 55.500000
+10 61.500000
+11 67.500000
+12 73.500000
+13 79.500000
+14 85.500000
+PASSED
+```
+
+which shows that some passes tha Proxy Kokkos' behaviour (see below for detailed code structure) appear to
+work and that going via Kokkos also works. However, please note the line in the output:
+
+```
+In par for: Before Kernel call: idx = 2 argument functor : my addr=0x3c92310 mult=0 ptr_d=0x0
+In par for: Before Kernel call: idx = 2 localcopy : my addr=0x3c92338 mult=6 ptr_d=0x1c06000
+```
+which shows that moving from the the `q.submit` to the `cgh.parallel_for` the functor that was passed in had its members *zeroed out* (`mult=0 ptr_d=0`). A local copy made before the `cgh.parallel_for` was entered was captured and seems OK in thread 2 (`idx = 2`) of the parallel for.
+
+However if I run the code a few times pretty soon I will get something like
+
+```
+Functor: my addr=0x7ffdb156d650 mult=6 ptr_d=0x24a3000
+Before par for: ptr_d=my addr=0x7ffdb156d650 mult=6 ptr_d=0x24a3000
+Before par for: local copy = my addr=0x7ffdb156d1a0 mult=6 ptr_d=0x24a3000
+In par for: Before Kernel call: idx = 2 argument functor : my addr=0x5f8e310 mult=0 ptr_d=0x0
+In par for: Before Kernel call: idx = 2 localcopy : my addr=0x5f8e338 mult=6 ptr_d=0x650065024a3000
+Calling Localfunctor 
+0 1.500000
+1 5.500000
+i = 1 diff = 2 > 5.0e-14
+2 9.500000
+i = 2 diff = 4 > 5.0e-14
+3 13.500000
+i = 3 diff = 6 > 5.0e-14
+4 17.500000
+i = 4 diff = 8 > 5.0e-14
+5 21.500000
+i = 5 diff = 10 > 5.0e-14
+6 25.500000
+i = 6 diff = 12 > 5.0e-14
+7 29.500000
+i = 7 diff = 14 > 5.0e-14
+8 33.500000
+i = 8 diff = 16 > 5.0e-14
+9 37.500000
+i = 9 diff = 18 > 5.0e-14
+10 41.500000
+i = 10 diff = 20 > 5.0e-14
+11 45.500000
+i = 11 diff = 22 > 5.0e-14
+12 49.500000
+i = 12 diff = 24 > 5.0e-14
+13 53.500000
+i = 13 diff = 26 > 5.0e-14
+14 57.500000
+i = 14 diff = 28 > 5.0e-14
+MEGABARF!
+```
+and we can now see that the pointer in the `localcopy` is corrupted for thread with `idx=2`, it has changed from 
+`ptr_d=0x24a3000` before the parallel for to `ptr_d=0x650065024a3000` after (a bunch of digits seem to have been
+masked in/not masked off adding the digits `0x6500650` at the front of the original address. The other threads presumably also got
+corrupted pointers hence differences in nearly all the values of `i`. One can get a case where the printed pointer looks
+fine but the answers for some threads are still wrong. This is because we only print the pointer for thread with `idx==2`
+(originally to reduce clutter on screen)
+
+## The workaround
+This workaround was found by @nliber. Edit the `main.cpp` and comment out the typedef aliasing `double*` to `my_ptr_t` and comment in the other definition
+like so:
+```
+// typedef double* my_ptr_t;
+typedef uintptr_t my_ptr_t;
+```
+
+now make and run again a few times:
+```
+make clean
+make -j 
+./bytes_and_flops.host
+./bytes_and_flops.host
+...
+```
+
+the test should now pass all the time. While the functor that was passed in as an argument *is still zeroed out*, 
+the localopy now seems to work fine. We hypothesize that this is  because we are claiming that the pointer is now
+just an unsigned integer, and any pointer processing doesn't realize it is a pointer and just works. When we need
+it we explicitly cast it back to a pointer. We ran a test where we executed the testcase 1000 times and found no
+instances of it failing, whereas the buggy test seemed to fail with regularity: every 2-3 attempts at the least, possibly
+more frequently.
+
+## Tentative conclusion	
+
+We suspect that struct members that are USM pointers are not captured correctly in SYCL lambdas. Discussions
+with James Brodman indicate that there is such a bug already being worked on. I am putting in this bugreport
+so that the issue can be tracked on the GitHub public compiler too.
+
+
+
+## Detailed code structure and description
 
 The clone will create a directory called `parallel_for`
 
@@ -34,19 +231,20 @@ In `main.cpp` we define a functor as follows:
 struct functor {
 
   double mult;
-  double* ptr_d;   // This will be a device pointer
+  my_ptr_t ptr_d;
 
   void operator()(const int i,  cl::sycl::stream out) const {
 
-    if ( ptr_d == 0x0 ) { 
-      if ( i  == 2 ) {   // So only 1 thread prints
+    if ( ptr_d == 0x0 ) {
+      if ( i  == 2 ) {
         out << "Id = " << i << " BARF!!!" << cl::sycl::endl;
       }
     }
     else {
-      ptr_d[i] = mult*(double)i+1.5; // The actual work
+      ((double *)ptr_d)[i] = mult*(double)i+1.5;
     }
   }
+
 
   // These are just so the functor could print itself out both in and outside
   // SYCL kernels
@@ -64,23 +262,38 @@ We then allocate a device pointer using USM for the `ptr_d` member and dispatch 
 both using the Kokkos back end and Kokkos proxies as follows:
 
 ```
-  double* ptr_d=(double *)cl::sycl::malloc_device(N*sizeof(double),device,context);
-  std::cout << " q ptr is : " << (unsigned long)q << std::endl;
-  std::cout << " ptr_d is : " << (unsigned long)ptr_d << std::endl;
-  std::cout << " Calling q.submit() " << std::endl;
-  functor* f=(functor *)cl::sycl::malloc_shared(sizeof(functor),device,context);
-  f->mult=4.0;
-  f->ptr_d = ptr_d;
-  Foo::Bar::my_parallel_for_2(N,*f);
-  copyAndPrint(ptr_d,q,N);
+int main(int argc, char *argv[])
+{
+        Kokkos::initialize(argc,argv);
 
-  std::cout << "Kokkos::parallel_for " << std::endl;
-  f->mult = 6.0;
-  f->ptr_d = ptr_d;
+        cl::sycl::queue* q = Kokkos::Experimental::SYCL().impl_internal_space_instance()->m_queue;
+        auto context = q->get_context();
+        auto  device = q->get_device();
 
-  Kokkos::parallel_for(N,*f);
-  Kokkos::fence();
-  copyAndPrint(ptr_d,q,N);
+        const int N = 15;
+
+        double* ptr_d=(double *)cl::sycl::malloc_device(N*sizeof(double),device,context);
+
+        std::cout << " q ptr is : " << (unsigned long)q << std::endl;
+        std::cout << " ptr_d is : " << (unsigned long)ptr_d << std::endl;
+        std::cout << " Calling q.submit() " << std::endl;
+
+
+        functor f;
+        f.mult=4.0;
+        f.ptr_d = (my_ptr_t)ptr_d;
+        Foo::Bar::my_parallel_for_2(N,f);
+        copyAndPrint(ptr_d,q,N,f.mult);
+
+        std::cout << "Kokkos::parallel_for " << std::endl;
+        f.mult = 6.0;
+        f.ptr_d = (my_ptr_t)ptr_d;
+        Kokkos::parallel_for(N,f);
+        Kokkos::fence();
+        copyAndPrint(ptr_d,q,N,f.mult);
+...
+}
+
 ```
 
 The `Foo::Bar::my_parallel_for_2` is a proxy for Kokkos parallel for. The 'copyAndPrint` function
@@ -151,7 +364,8 @@ void launch(Driver driver_in) {
                         if (idx == 2 ) { // stop threads overwriting
                                 out << "idx = " << idx << " PF ptr_d = " << (unsigned long)driver_in.m_functor.ptr_d << cl::sycl::endl;
                         }
-                        driver_in.m_functor(idx, out);
+                        driver_in.m_functor(idx, out); // Use passed in functor captured in the template Driver struct
+                                                       // which is just the ParallelFor above.
                 });
         });
         q->wait_and_throw();
@@ -233,21 +447,11 @@ void sycl_launch(Driver driver_in) {
   std::cerr << "Functor: " << driver_in.m_functor << std::endl;
 #endif
 
-#ifdef DO_LOCALCOPY
-      bool localcopy = true;
-#else
-      bool localcopy = false;
-#endif
-
-#ifdef NO_LAMBDA
-      bool printfunctor=true;
-#else
-      bool printfunctor=false;
-#endif
       q->submit([&](cl::sycl::handler& cgh) {
           cl::sycl::stream out(1024,256,cgh);
 
-          auto localfunctor = driver_in.m_functor;
+          auto localfunctor = driver_in.m_functor;  // Make a copy of the passed in functor
+                                                    //
 #ifdef NO_LAMBDA
           std::cout << "Before par for: ptr_d=" << driver_in.m_functor << std::endl;
           std::cout << "Before par for: local copy = " << localfunctor << std::endl;
@@ -263,15 +467,13 @@ void sycl_launch(Driver driver_in) {
 #endif
                  }
 
-                 if ( localcopy  )  {
-                    if ( idx == 2 ) {  out << "Calling Localfunctor " << cl::sycl::endl; }
-                    localfunctor(idx,out);
+                
+                if ( idx == 2 ) {  out << "Calling Localfunctor " << cl::sycl::endl; }
+                localfunctor(idx,out);
 
-                 }
-                 else {
-                    if ( idx == 2 ) { out << "Calling driver_in.m_functor " << cl::sycl::endl; }
-                    driver_in.m_functor(idx,out);
-                 }
+                //    if ( idx == 2 ) { out << "Calling driver_in.m_functor " << cl::sycl::endl; }
+                //    driver_in.m_functor(idx,out);
+                
 
          });
       });
@@ -285,251 +487,10 @@ If `-DNO_LAMBDA` is enabled the last test in `main` which launches `Kokkos::para
 only the functor class test is run. In this case we can print out the device pointers in the struct, which are not available
 otherwise in a lambda functor.
 
-In this launcher we can launch either the functor that was captured in main into the `driver_in` function argument, in which case
-the bug can manifest. A workaround is to copy the `driver_in.m_functor` into a local variable in Command Group Scope (after the
-`q.submit(` but before the `cgh.parallel_for`. The local copy functor is dispatched if `-DDO_LOCALCOPY` is defined in the `TEST_OPTIONS`
-in the `Makefile`, otherwise the original `driver_in.m_functor` is dispatched. We also print a bunch of debug information.
+As one can see from the code comments originally we wanted to launch using the passed in `driver_in.m_functor(idx,out)`
+call however as also noted the `driver_in.m_functor` when captured in the `cgh.parallel_for` lambda seems to be zeroed
+out (although it works fine in my proxy class).
 
-
-
-## Compilers and drivers
-
-We need a version of the compiler with USM extensions, and a driver capable of 
-USM. I use the following version of the Public SYCL Compiler:
-
-> clang version 9.0.0 (https://github.com/intel/llvm.git 51a6204c09f8c8868cb9675c1a7f4c1386eb3c65)
-> Target: x86_64-unknown-linux-gnu
-> Thread model: posix
-> InstalledDir: /dist/sfw/ubuntu/intel-llvm9-sycl-2019-09-17/bin
-
-and I use the Intel HD Compute driver (NEO) version `19.36.14103`
-
-
-## Manifesting the bug
-
-Set the first line of the `Makefile` as:
-
-> TEST_OPTIONS=-DDO_LOCALCOPY -DNO_LAMBDA
-
-then build and run the test
-
-> make clean ; make -j 8 
-> ./bytes_and_flops.host
-
-In my example the first run went wrong and the second run went right even using the 
-local copy functor:
-
-Snippet of first output with annotation by me in C++ style comments ( `// BJ:`)
-```
-Device 0 : Intel(R) Gen9 HD Graphics NEO Driver Version: 19.36.14103 Is accelerator: YES
- q ptr is : 43160448
- ptr_d is : 33062912
- Calling q.submit() 
-Calling execute
-In sycl_launch_copy
-Queue pointer is: 43160448
-range=15
-driver_in.ptr_d = 33062912
-idx = 2 PF ptr_d = 33062912    // BJ: proxy results using factor = 4 are correct below
-0 1.500000
-1 5.500000
-2 9.500000
-3 13.500000
-4 17.500000
-5 21.500000
-6 25.500000
-7 29.500000
-8 33.500000
-9 37.500000
-10 41.500000
-11 45.500000
-12 49.500000
-13 53.500000
-14 57.500000
-Kokkos::parallel_for 
-in execute: ptr_d =  0x1f88000
-In sycl_launch
-Queue pointer is: 43160448
-range=15
-driver_in.ptr_d = 33062912
-Functor: my addr=0x7ffe90516440 mult=6 ptr_d=0x1f88000                                             // Kokkos::parallel for with mult=6
-Before par for: ptr_d=my addr=0x7ffe90516440 mult=6 ptr_d=0x1f88000                                // BJ: driver_in.m_functor ptr_d is OK  
-Before par for: local copy = my addr=0x7ffe90515f40 mult=6 ptr_d=0x1f88000                         // BJ: ptd_d in local copy is OK
-In par for: Before Kernel call: idx = 2 argument functor : my addr=0x5093320 mult=0 ptr_d=0x0      // BJ: driver_in.m_functor ptr_d = 0x0
-In par for: Before Kernel call: idx = 2 localcopy : my addr=0x5093348 mult=6 ptr_d=0xffffffff01f88000  // BJ: local copy ptr_d is weird
-Calling Localfunctor 
-0 1.500000
-1 5.500000    // BJ: Should be 7.5
-2 9.500000    // BJ: Should be 13.5
-3 19.500000
-4 25.500000
-
-5 31.500000
-6 37.500000
-7 43.500000
-8 49.500000
-9 55.500000
-10 61.500000
-11 67.500000
-12 49.500000
-13 53.500000
-14 85.500000
-```
-
-Already we can see that the device pointer `ptr_d` before the parallel for looks correct, both When I ran this a second time the output was correct:
-```
-driver_in.ptr_d = 19881984    // BJ: proxy parallel for with mult=4 is good below
-idx = 2 PF ptr_d = 19881984   
-0 1.500000
-1 5.500000
-2 9.500000
-3 13.500000
-4 17.500000
-5 21.500000
-6 25.500000
-7 29.500000
-8 33.500000
-9 37.500000
-10 41.500000
-11 45.500000
-12 49.500000
-13 53.500000
-14 57.500000
-Kokkos::parallel_for 
-in execute: ptr_d =  0x12f6000
-In sycl_launch
-Queue pointer is: 29979520
-range=15
-driver_in.ptr_d = 19881984
-Functor: my addr=0x7ffcb8f27a00 mult=6 ptr_d=0x12f6000                             // BJ: Kokkos parallel for with mult=6 now
-Before par for: ptr_d=my addr=0x7ffcb8f27a00 mult=6 ptr_d=0x12f6000                // BJ: driver_in.m_functor.ptr_d is good                        
-Before par for: local copy = my addr=0x7ffcb8f27500 mult=6 ptr_d=0x12f6000         // BJ: local copy is good
-In par for: Before Kernel call: idx = 2 argument functor : my addr=0x4402320 mult=0 ptr_d=0x0 // BJ: in parallel for driver_in.m_functor.ptr_d=0x0
-In par for: Before Kernel call: idx = 2 localcopy : my addr=0x4402348 mult=6 ptr_d=0x12f6000  // BJ: localcopy.ptr_d looks GOOD!!
-Calling Localfunctor 
-0 1.500000 
-1 7.500000    // BJ:  Answer is now correct
-2 13.500000   // BJ:  Answer is now correct
-3 19.500000
-4 25.500000
-5 31.500000
-6 25.500000
-7 29.500000
-8 49.500000
-9 37.500000
-10 41.500000
-11 67.500000
-12 73.500000
-13 79.500000
-14 57.500000 // BJL 
-```
-As we could see in both cases the original `driver_in.m_functor.ptr_d` was not captured correctly and was in fact 0. 
-In the first instance the `localfunctor.ptr_d` was also bad, but in the second case it was ok.
-
-We now get to the original bug, which is when we dispatch the original `driver_in.m_functor`. We already know this will be 
-bad since the `ptr_d` is zero. However, this does not go wrong in the proxy class. To make the example use the origina
-`driver_in.m_functor` remove the `-DDO_LOCALCOPY`from the `Makefile` test options like so:
-
-> TEST_OPTIONS=-DNO_LAMBDA
-
-The output in my case looks like so:
-
-```
-Queue pointer is: 19231312
-range=15
-driver_in.ptr_d = 19251200
-idx = 2 PF ptr_d = 19251200  // BJ: Original functor gives good resuts
-0 1.500000
-1 5.500000
-2 9.500000
-3 13.500000
-4 17.500000
-5 21.500000
-6 25.500000
-7 29.500000
-8 33.500000
-9 37.500000
-10 41.500000
-11 45.500000
-12 49.500000
-13 53.500000
-14 57.500000
-Kokkos::parallel_for 
-in execute: ptr_d =  0x125c000
-In sycl_launch
-Queue pointer is: 19231312
-range=15
-driver_in.ptr_d = 19251200
-Functor: my addr=0x7ffd232976d0 mult=6 ptr_d=0x125c000
-Before par for: ptr_d=my addr=0x7ffd232976d0 mult=6 ptr_d=0x125c000
-Before par for: local copy = my addr=0x7ffd232971d0 mult=6 ptr_d=0x125c000
-In par for: Before Kernel call: idx = 2 argument functor : my addr=0x4369320 mult=0 ptr_d=0x0  // BJ: captured driver_in.m_functor.ptr_d is 0
-In par for: Before Kernel call: idx = 2 localcopy : my addr=0x4369348 mult=6 ptr_d=0x125c000
-Calling driver_in.m_functor 
-Id = 2 BARF!!!                 // BJ: captured driver_in.m_functor.ptr_d is 0 so kernel barfs.
-0 1.500000                     // BJ: results are unchanged from first (working) result from proxy classes
-1 5.500000
-2 9.500000
-3 13.500000
-4 17.500000
-5 21.500000
-6 25.500000
-7 29.500000
-8 33.500000
-9 37.500000
-10 41.500000
-11 45.500000
-12 49.500000
-13 53.500000
-14 57.500000
-```
-
-James Brodman suggested passing the functor as a pointer. I tried to get this to work but when I did I never got good behavior.
-I tried capturing `f` as a pointer in the `Kokkos::parallel_for` like so:
-```
-	
-        f->mult = 6.0;
-        f->ptr_d = ptr_d;
-        {
-          Kokkos::parallel_for(N,f); // f is now a pointer
-          Kokkos::fence();
-        }
-        copyAndPrint(ptr_d,q,N);
-```
-
-But this will just record a pointer in the `ParallelFor<FunctionType,Policy>` closure class
-(and `FunctionType` will be `functor*`)
-
-In the launcher I now dispatch as:
-```
-      q->submit([&](cl::sycl::handler& cgh) {
-          cl::sycl::stream out(1024,256,cgh);
-
-          auto localfunctor = *(driver_in.m_functor);
-#ifdef NO_LAMBDA
-          std::cout << "Before par for: ptr_d=" << *(driver_in.m_functor) << std::endl;
-          std::cout << "Before par for: local copy = " << (localfunctor) << std::endl;
-#endif
-          cgh.parallel_for (
-                  cl::sycl::range<1>(driver_in.m_policy.end()-driver_in.m_policy.begin()),
-                  [=] (cl::sycl::id<1> item) {
-                 size_t idx = item[0];
-                 auto localfunctor2 = *(driver_in.m_functor);
-                 if (idx == 2 ) { // stop threads overwriting
-
-                   out << "In par for: Before Kernel call: idx = " << idx << " argument functor : " <<  *(driver_in.m_functor) << cl::sycl::endl;
-                   out << "In par for: Before Kernel call: idx = " << idx << " localcopy : " <<  (localfunctor) << cl::sycl::endl;
-                 }
-
-                 if ( idx == 2 ) { out << "Calling driver_in.m_functor " << cl::sycl::endl; }
-                 localfunctor2(idx,out);
-
-         });
-      });
-      q->wait_and_throw();
-```
-
-The output from the `Kokkos::parallel_for` is now:
 
 
 

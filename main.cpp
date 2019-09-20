@@ -1,10 +1,12 @@
 #include <Kokkos_Core.hpp>
 
+typedef double* my_ptr_t;
+//typedef uintptr_t my_ptr_t;
 
 struct functor {
  
   double mult;   
-  double* ptr_d;
+  my_ptr_t ptr_d;
 
   void operator()(const int i,  cl::sycl::stream out) const {
 
@@ -14,7 +16,7 @@ struct functor {
       }
     }
     else {
-      ptr_d[i] = mult*(double)i+1.5;
+      ((double *)ptr_d)[i] = mult*(double)i+1.5;
     }
   }
 
@@ -50,13 +52,13 @@ int main(int argc, char *argv[])
 
 	functor f;
 	f.mult=4.0;
-	f.ptr_d = ptr_d;
+	f.ptr_d = (my_ptr_t)ptr_d;
 	Foo::Bar::my_parallel_for_2(N,f);
         copyAndPrint(ptr_d,q,N,f.mult);
 
 	std::cout << "Kokkos::parallel_for " << std::endl;
 	f.mult = 6.0;
-	f.ptr_d = ptr_d;
+	f.ptr_d = (my_ptr_t)ptr_d;
 	Kokkos::parallel_for(N,f);
 	Kokkos::fence();
 	copyAndPrint(ptr_d,q,N,f.mult);
@@ -72,7 +74,7 @@ int main(int argc, char *argv[])
              }
            }
            else {
-             ptr_d[i] = mult*(double)i+1.5;
+             ((double *)ptr_d[i] = mult*(double)i+1.5;
            }
         });
 	Kokkos::fence();
@@ -109,6 +111,10 @@ void copyAndPrint(void *ptr_d, cl::sycl::queue* q, int N, double mult) {
 	if (pass) {
 	   std::cout << "PASSED" << std::endl;
 	}
+	else { 
+           std::cout << "MEGABARF!" << std::endl;
+	}
+
 }
 
 void zero(double *ptr_d, cl::sycl::queue *q, int N) 
